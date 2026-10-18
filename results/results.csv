@@ -1,0 +1,5 @@
+dataset,index_type,threads,query_mode,build_params,search_params,recall_at_10,qps,latency_ms,build_time_s,index_size_bytes,bytes_per_vector
+sift,Exact-Flat,1,batch,{},{},1.0,135.89,7.36,0.18,512000045,512.0
+sift,Exact-Flat,1,single,{},{},1.0,37.23,26.86,0.18,512000045,512.0
+glove,Exact-Flat,1,batch,{},{},1.0,155.79,6.42,0.17,473405645,400.0
+glove,Exact-Flat,1,single,{},{},1.0,42.36,23.61,0.17,473405645,400.0
