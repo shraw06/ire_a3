@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 import time
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 import faiss
 import numpy as np
 
@@ -27,6 +27,7 @@ def time_batch_search(
     k: int = 10,
     num_runs: int = 3,
     threads: int = 1,
+    **kwargs: Any,
 ) -> Tuple[TimingResult, np.ndarray, np.ndarray]:
     """
     Measures search time when querying all vectors in a single batch.
@@ -42,7 +43,7 @@ def time_batch_search(
 
     for _ in range(num_runs):
         t0 = time.perf_counter()
-        last_dists, last_indices = index.search(queries, k=k)
+        last_dists, last_indices = index.search(queries, k=k, **kwargs)
         elapsed = time.perf_counter() - t0
         run_times.append(elapsed)
 
@@ -69,6 +70,7 @@ def time_single_query_search(
     num_runs: int = 3,
     threads: int = 1,
     max_eval_queries: Optional[int] = None,
+    **kwargs: Any,
 ) -> Tuple[TimingResult, np.ndarray, np.ndarray]:
     """
     Measures search time when executing queries one by one.
@@ -95,7 +97,7 @@ def time_single_query_search(
 
         t0 = time.perf_counter()
         for i in range(eval_count):
-            d, idx = index.search(eval_queries[i : i + 1], k=k)
+            d, idx = index.search(eval_queries[i : i + 1], k=k, **kwargs)
             cur_dists[i] = d[0]
             cur_indices[i] = idx[0]
         elapsed = time.perf_counter() - t0
