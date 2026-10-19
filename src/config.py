@@ -10,10 +10,15 @@ RESULTS_CSV = RESULTS_DIR / "results.csv"
 FIGURES_DIR = RESULTS_DIR / "figures"
 SWEEPS_DIR = FIGURES_DIR / "sweeps"
 
+RESULTS_CACHE_DIR = RESULTS_DIR / "cache"
+PART3_FIGURES_DIR = FIGURES_DIR / "part3"
+
 # Ensure output directories exist
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 SWEEPS_DIR.mkdir(parents=True, exist_ok=True)
+PART3_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Dataset paths
 SIFT_FILE = "sift-128-euclidean.hdf5"
@@ -79,3 +84,25 @@ QUICK_IVF_NLIST_LIST = [512, 1024]
 QUICK_IVF_NPROBE = [1, 8, 32, 128]
 QUICK_SIFT_PQ_M = [16, 32]
 QUICK_GLOVE_PQ_M = [10, 20]
+
+# --------------------------------------------------------------------------
+# Part 3: Scaling Experiment (SIFT 100K, 300K, 1M)
+# --------------------------------------------------------------------------
+SCALING_DATASET_SIZES = [100_000, 300_000, 1_000_000]
+
+PART3_HNSW_M_LIST = [8, 16, 32]
+PART3_HNSW_EF_CONSTRUCTION = 64
+PART3_HNSW_EF_SEARCH_LIST = [8, 16, 32, 64, 128, 256, 512]
+
+PART3_IVF_NLIST_MAP = {
+    100_000: [512, 1024, 2048],
+    300_000: [512, 1024, 2048],
+    1_000_000: [1024, 2048, 4096],
+}
+PART3_IVF_NPROBE_LIST = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+
+QUICK_PART3_SIZES = [100_000]
+QUICK_PART3_HNSW_M = [8, 16]
+QUICK_PART3_HNSW_EF_SEARCH = [8, 32, 128]
+QUICK_PART3_IVF_NLIST = [512, 1024]
+QUICK_PART3_IVF_NPROBE = [1, 8, 32, 128]

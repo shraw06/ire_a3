@@ -207,3 +207,85 @@ def plot_overall_pareto(
     plt.savefig(output_path)
     plt.close(fig)
     print(f"  [Figure] Saved overall Pareto plot: {output_path}")
+
+
+def plot_scaling_curves(
+    scaling_records: List[Dict[str, Any]],
+    output_dir: Path,
+) -> None:
+    """
+    Generates scaling plots showing how QPS, Latency, Build Time, and Memory scale
+    with database size N (100K, 300K, 1M) for Exact-Flat, HNSW, and IVF-Flat.
+
+    Args:
+        scaling_records: List of dicts, each with keys:
+            ['dataset_size', 'index_type', 'qps', 'latency_ms', 'build_time_s', 'index_size_mb']
+        output_dir: Directory to save the generated plots.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    colors = {
+        "Exact-Flat": "#9467bd",  # Purple
+        "HNSW": "#1f77b4",        # Blue
+        "IVF-Flat": "#2ca02c",    # Green
+    }
+    markers = {
+        "Exact-Flat": "*",
+        "HNSW": "o",
+        "IVF-Flat": "s",
+    }
+
+    metrics_to_plot = [
+        ("qps", "Queries Per Second (QPS) @ Recall 0.95", "scaling_qps_vs_size.png", True),
+        ("latency_ms", "Single-Query Latency (ms) @ Recall 0.95", "scaling_latency_vs_size.png", True),
+        ("build_time_s", "Index Build Time (s) @ Recall ≥ 0.95", "scaling_build_time_vs_size.png", True),
+        ("index_size_mb", "Index Size (MB) @ Recall ≥ 0.95", "scaling_memory_vs_size.png", False),
+    ]
+
+    import pandas as pd
+    df = pd.DataFrame(scaling_records)
+
+    sizes = sorted(df["dataset_size"].unique())
+    size_labels = [f"{int(s/1000)}K" if s < 1_000_000 else "1M" for s in sizes]
+
+    for metric_col, ylabel, filename, log_y in metrics_to_plot:
+        fig, ax = plt.subplots(figsize=(8, 5.5), dpi=150)
+
+        for idx_type in ["Exact-Flat", "HNSW", "IVF-Flat"]:
+            sub = df[df["index_type"] == idx_type].sort_values("dataset_size")
+            if sub.empty:
+                continue
+
+            x_vals = sub["dataset_size"].tolist()
+            y_vals = sub[metric_col].tolist()
+            c = colors.get(idx_type, "black")
+            m = markers.get(idx_type, "o")
+
+            ax.plot(
+                x_vals,
+                y_vals,
+                marker=m,
+                color=c,
+                linewidth=2.2,
+                markersize=8,
+                label=idx_type,
+            )
+
+        ax.set_xscale("log")
+        if log_y:
+            ax.set_yscale("log")
+
+        ax.set_xticks(sizes)
+        ax.set_xticklabels(size_labels, fontsize=11, fontweight="bold")
+        ax.set_xlabel("Database Size (Vectors)", fontsize=12, fontweight="bold")
+        ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
+        ax.set_title(f"SIFT Scaling Analysis: {ylabel.split('(')[0].strip()}", fontsize=13, fontweight="bold")
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.7)
+        ax.legend(fontsize=11)
+
+        plt.tight_layout()
+        save_path = output_dir / filename
+        plt.savefig(save_path)
+        plt.close(fig)
+        print(f"  [Figure] Saved scaling plot: {save_path}")
