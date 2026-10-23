@@ -26,3 +26,14 @@ Database size: 100K, 300K, and 1M vectors.
 - Same machine and software versions
 - Single-threaded query measurements
 - Same recall implementation and timing procedure
+
+# Part 4: Hard Geometry Hypothesis
+
+## Research question
+How does cluster separation affect the search effort required by HNSW and IVF-Flat to achieve Recall@10 = 0.95?
+
+## Hypothesis
+As clusters become less separated and overlap increases, IVF-Flat will require a higher nprobe to achieve Recall@10 = 0.95, since relevant neighbours may lie in clusters that are not probed. HNSW may exhibit a different sensitivity to cluster overlap because it searches a graph rather than selected clusters.
+
+## Experimental Design:
+Generate synthetic clustered datasets with fixed dimensionality, number of vectors, cluster count, and within-cluster variance. Vary only the cluster-separation multiplier across one control and three additional settings. Use a fixed random seed for reproducibility. Compare HNSW and IVF-Flat using recall-versus-QPS curves.
