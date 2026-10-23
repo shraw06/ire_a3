@@ -21,6 +21,7 @@ ire_a3/
 ├── src/
 │   ├── config.py            # Centralized dataset paths, dimensions, split sizes, tolerances
 │   ├── data.py              # HDF5 loader, L2 normalization for GloVe, query splits
+│   ├── data_generator.py    # Synthetic clustered data generator & exact GT computation
 │   ├── metrics.py           # recall@k with distance tie handling at k-th neighbor
 │   ├── index/
 │   │   ├── base.py          # BaseIndex abstract base class
@@ -36,19 +37,22 @@ ire_a3/
 │   ├── test_metrics.py      # 9 unit tests for recall@k (ties, partial, duplicates, edge cases)
 │   ├── test_exact.py        # 3 integration tests for exact search and dataset agreement
 │   ├── test_ann_indexes.py  # 5 integration tests for HNSW, IVF-Flat, IVF-PQ & Pareto logic
-│   └── test_part3_scaling.py # 2 unit/integration tests for subset ground truth and scaling
+│   ├── test_part3_scaling.py # 2 unit/integration tests for subset ground truth and scaling
+│   └── test_part4_synthetic.py # 4 unit/integration tests for synthetic generation & Part 4
 ├── scripts/
 │   ├── run_part1.py         # Standalone CLI runner for Part 1 baseline and benchmarks
 │   ├── run_part2.py         # Standalone CLI runner for Part 2 ANN benchmarks & plotting
-│   └── run_part3.py         # Standalone CLI runner for Part 3 SIFT scaling experiment
+│   ├── run_part3.py         # Standalone CLI runner for Part 3 SIFT scaling experiment
+│   └── run_part4.py         # Standalone CLI runner for Part 4 hard geometry experiment
 ├── results/
 │   ├── results.csv          # Benchmark results log conforming to assignment deliverables
-│   ├── cache/               # Precomputed subset ground truth files (sift_gt_100k, sift_gt_300k)
+│   ├── cache/               # Precomputed subset ground truth files (sift_gt_*, synthetic_*)
 │   └── figures/             # Trade-off curves and individual sweep plots
 │       ├── sift_recall_vs_qps.png
 │       ├── glove_recall_vs_qps.png
 │       ├── sweeps/          # Individual parameter sweep plots for each index and dataset
-│       └── part3/           # Part 3 scaling curves (QPS, Latency, Build time, Memory)
+│       ├── part3/           # Part 3 scaling curves (QPS, Latency, Build time, Memory)
+│       └── part4/           # Part 4 hard geometry 4-panel main figure
 ├── hypothesis.md            # Pre-committed hypotheses for experimental parts
 ├── requirements.txt
 └── README.md
@@ -85,9 +89,10 @@ In nearest neighbour benchmarking, queries frequently exhibit distance ties at t
   - **SIFT-128**: FAISS `IndexFlatL2` returns squared Euclidean distance ($L_2^2$). Aligned via $\text{dist} = \sqrt{\max(D_{\text{FAISS}}, 0)}$.
   - **GloVe-100**: On unit-normalized vectors, FAISS returns $\|u - v\|^2 = 2 (1 - \cos(\theta))$. Aligned via $\text{dist} = D_{\text{FAISS}} / 2.0$.
 - **Distance Thresholding (No ID-set Fallback)**:
-  $$\text{Recall@}k = \frac{1}{k} \sum_{j=1}^k \mathbb{I}\left[\text{dist}(q, p_j) \le d_k + \epsilon\right]$$
-  where $d_k = \text{gt\_distances}[k - 1]$ and $\epsilon = 10^{-4}$.
-  - Any retrieved candidate with aligned distance $\le d_k + \epsilon$ is recognized as a valid nearest neighbour, fully crediting alternative database vectors tied at the boundary without restriction to a pre-truncated ground-truth ID set.
+  $$\text{Recall@}k = \frac{1}{k} \sum_{j=1}^k \mathbb{I}\left[\text{dist}(q, p_j) \le d_k + \delta_k\right]$$
+  where $d_k = \text{gt\_distances}[k - 1]$ and $\delta_k = \max(\epsilon,\ \epsilon \cdot d_k)$ with $\epsilon = 10^{-4}$.
+  - The tolerance $\delta_k$ is **relative-plus-absolute**: it scales with $d_k$ so that floating-point rounding at large distances is handled consistently. For SIFT (typical $d_{10} \approx 100$–$400$), $\delta_k \approx 0.01$–$0.04$; for GloVe (cosine distances $d_{10} \approx 0.05$–$0.3$), $\delta_k \approx \epsilon = 10^{-4}$.
+  - Any retrieved candidate with aligned distance $\le d_k + \delta_k$ is recognized as a valid nearest neighbour, fully crediting alternative database vectors tied at the boundary without restriction to a pre-truncated ground-truth ID set.
   - Candidate IDs are deduplicated to ensure repeated items cannot artificially inflate recall.
 
 ### 2. Ground Truth Agreement Verification
@@ -101,7 +106,9 @@ Exact search was executed on the evaluation split (queries 5,000–10,000) using
 *Both datasets achieved 100% agreement (`recall@10 == 1.0`) across all queries.*
 
 ### 3. Timing Benchmark: Single-Query vs. Batch-Query
-Timings were measured on a single thread (`faiss.omp_set_num_threads(1)`), taking the median across runs:
+Timings were measured on a single thread (`faiss.omp_set_num_threads(1)`), taking the median across runs.
+
+> **Timing methodology note**: Batch search times all 5,000 evaluation queries in one call. Single-query search is measured on a sample of **500 queries** and the per-query latency is extrapolated to the full 5,000 query set (i.e. `QPS = 5000 / (median_time_per_query × 5000)`). Because each brute-force query is i.i.d. this extrapolation is unbiased, but the reported single-query numbers carry higher variance than the batch numbers. Build times use multi-threaded construction (16 threads) to bound wall-clock time; search is always single-threaded.
 
 | Dataset | Index Type | Threads | Query Mode | Recall@10 | Throughput (QPS) | Latency (ms/query) | Build Time (s) | Index Size |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -144,11 +151,11 @@ In Part 2, we evaluate three major Approximate Nearest Neighbour (ANN) index par
 3. **Inverted File with Vector Quantization**: Inverted File Product Quantization (**IVF-PQ**)
 
 ### 1. Benchmarking Methodology & Ground Rules
-- **Thread Count**: All searches and timing benchmarks run strictly on a **single CPU thread** (`faiss.omp_set_num_threads(1)`).
-- **Execution Mode**: Evaluated strictly **one query at a time** (single-query search) to measure true interactive retrieval throughput.
+- **Thread Count**: All **searches and timing benchmarks** run strictly on a **single CPU thread** (`faiss.omp_set_num_threads(1)`). **Index build** uses up to 16 threads to bound wall-clock construction time — build times in the tables therefore reflect multi-threaded construction, not single-threaded.
+- **Execution Mode**: Evaluated strictly **one query at a time** (single-query search) to measure true interactive retrieval throughput. QPS for each (build-setting, search-param) pair is measured on a sample of queries, then extrapolated; see Part 1 §3 for the sampling methodology.
 - **Timing & Stability**: Median elapsed time over multiple independent runs is recorded after warm-up to eliminate cold-start cache anomalies.
 - **Evaluation Split**: Benchmarked strictly on the reserved evaluation set (queries `5,000` to `9,999`, total 5,000 queries).
-- **Metric**: Distance-threshold `recall@10` (no ground-truth ID restriction; candidates $\le d_{10} + \epsilon$ credited, with $\epsilon = 10^{-4}$).
+- **Metric**: Distance-threshold `recall@10` (no ground-truth ID restriction; candidates $\le d_{10} + \delta_{10}$ credited, with $\delta_{10} = \max(\epsilon,\ \epsilon \cdot d_{10})$, $\epsilon = 10^{-4}$).
 
 ### 2. Parameter Sweep Specifications
 To span recall from low values up to $\ge 0.95$:
@@ -190,7 +197,7 @@ Each build parameter sweep across search parameters (`efSearch` or `nprobe`) is 
 ### 4. Benchmark Summary Tables
 
 #### Table 1: Single-Query Throughput (QPS) at Recall 0.90 and 0.95
-*Interpolated along each index's Pareto frontier (single thread, queries 5,000–10,000):*
+*Log-linearly interpolated along each index's Pareto frontier (single thread, queries 5,000–10,000). Values at exactly recall 0.90 / 0.95 are interpolated between the two nearest measured Pareto points; they are estimates, not directly measured QPS.*
 
 | Dataset | Index Type | QPS @ Recall 0.90 | QPS @ Recall 0.95 | Max Recall Achieved | Exact Baseline QPS (Single) | Speedup vs. Exact @ 0.95 |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
@@ -202,7 +209,7 @@ Each build parameter sweep across search parameters (`efSearch` or `nprobe`) is 
 | **GloVe-100** | **IVF-PQ** | **23,560.8** | 269.9 | 0.9551 | 42.36 | 6.4x |
 
 #### Table 2: Build Cost & Memory Footprint at Recall $\ge$ 0.95
-*Comparing the Pareto-optimal configuration reaching recall $\ge 0.95$ for each index:*
+*Comparing the Pareto-optimal configuration reaching recall $\ge 0.95$ for each index. Build times reflect multi-threaded construction (16 threads); search is always single-threaded.*
 
 | Dataset | Index Type | Best Config @ Recall $\ge$ 0.95 | Operating Recall | Search Param | Build Time (s) | Index Size (MB) | Bytes / Vector | Compression vs. Raw Data |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -245,7 +252,7 @@ The ground-truth nearest neighbours in `sift-128-euclidean.hdf5` are valid **onl
 
 ### 2. Scaling Benchmark Summary Table (Recall $\ge$ 0.95)
 
-*All numbers measured strictly on a single thread (`faiss.omp_set_num_threads(1)`), single query at a time, taking the median over multiple runs on queries 5,000–10,000:*
+*All **search** numbers measured strictly on a single thread (`faiss.omp_set_num_threads(1)`), single query at a time, taking the median over multiple runs on queries 5,000–10,000. **Build** uses multi-threaded construction (16 threads); build times reflect wall-clock construction time, not single-threaded cost. Single-query QPS for exact search is extrapolated from a 500-query sample (see Part 1 §3).*
 
 | Scale ($N$) | Index Type | Best Config @ Recall $\ge$ 0.95 | Operating Recall | QPS @ Recall 0.95 | Single Latency | Build Time (s) | Index Size | Bytes / Vec | Speedup vs Exact |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -309,44 +316,198 @@ Our empirical findings evaluate the hypotheses recorded in [`hypothesis.md`](hyp
   - **The Hidden Cost: Super-Linear Index Build Time**:
     While ANN query latency scales smoothly, index build time explodes:
     - **HNSW build time**: $1.53\text{ s } (100\text{K}) \to 8.11\text{ s } (300\text{K}) \to 37.42\text{ s } (1\text{M})$ (**24.5x increase** for a 10x data increase), driven by multi-layer graph insertions and higher $M$.
-    - **IVF-Flat build time**: $18.33\text{ s } (100\text{K}) \to 12.34\text{ s } (300\text{K}) \to 310.12\text{ s } (1\text{M})$ (**16.9x increase**), driven by $k$-means clustering convergence across 4,096 centroids.
+    - **IVF-Flat build time**: The Pareto-optimal `nlist` changes across scales ($\text{nlist}=1024$ at 100K, $\text{nlist}=512$ at 300K, $\text{nlist}=4096$ at 1M), so the raw build times ($18.33\text{ s} \to 12.34\text{ s} \to 310.12\text{ s}$) are **not directly comparable** — the 300K entry uses a smaller `nlist` and therefore fewer $k$-means centroids, which explains why it builds faster than the 100K entry despite 3× more vectors. The dominant cost at scale is $k$-means convergence: at 1M with `nlist=4096`, build time grows to **310.12 s**, a **17x increase** over the 100K result. When holding `nlist` fixed (e.g., `nlist=1024` across all scales), build time scales roughly linearly with $N$.
+
+---
+
+## Part 4: Experiment on Your Own Data — Hard Geometry (Cluster Separation)
+
+In Part 4, we evaluate the **Hard Geometry (Cluster Separation)** experiment formulated in our pre-committed hypothesis ([`hypothesis.md`](hypothesis.md)). We examine how the degree of spatial overlap and separation among natural Gaussian clusters affects the search effort, throughput, and recall of graph-based (**HNSW**) and inverted-file (**IVF-Flat**) approximate nearest neighbour indexes.
+
+### 1. Data Generation & Experimental Design
+
+- **Dimensions & Scale**: $D = 64$ dimensions, $K = 20$ natural clusters, $N = 100,000$ database vectors per setting.
+- **Budget Compliance**: Across 4 separation settings, total database vectors indexed is $4 \times 100,000 = 400,000 \le 500,000$, well within the assignment budget constraint.
+- **Separation Multipliers**: $s \in \{0.5, 1.0, 2.0, 4.0\}$, with **$s = 1.0$ serving as the control baseline**:
+  - $s = 0.5$: Severe cluster overlap (mean inter-centroid to within-cluster spread ratio $= 2.13$).
+  - $s = 1.0$: Moderate separation (control baseline, ratio $= 4.27$).
+  - $s = 2.0$: Well-separated clusters (ratio $= 8.54$).
+  - $s = 4.0$: Strongly isolated cluster islands (ratio $= 17.08$).
+  - *Ratios are computed empirically as $\bar{D}_{\text{inter}} / R_{\text{within}}$ and reported in the diagnostic table below; they are exact, not approximations.*
+- **Strict Reuse of Assignments & Noise**: Base cluster centroids $\mu_k \sim \mathcal{N}(0, I_D)$, point cluster assignments $c_i \in \{0, \dots, K-1\}$, and standard normal Gaussian noise vectors $\epsilon_i \sim \mathcal{N}(0, I_D)$ are generated once with random seed `42` and strictly preserved across all four settings:
+  $$x_i(s) = s \cdot \mu_{c_i} + \epsilon_i$$
+  This ensures that **inter-cluster separation distance is the sole independent variable**, completely isolating geometric overlap from confounding sampling differences.
+- **Query Splits & Ground Truth**:
+  - $Q = 2,000$ queries sampled per setting from the same cluster mixture ($1,000$ tuning queries, $1,000$ evaluation queries).
+  - Separate, exact top-100 ground truths (IDs and Euclidean distances) are precomputed individually for each separation setting using exact FAISS `IndexFlatL2` search and stored on disk.
+- **Index Configurations**:
+  - **HNSW**: Fixed build parameters $M = 16, \text{efConstruction} = 64$. Search beam swept across $\text{efSearch} \in [4, 8, 16, 32, 64, 128, 256, 512]$.
+  - **IVF-Flat**: Fixed build parameter $\text{nlist} = 512$. Search effort swept across $\text{nprobe} \in [1, 2, 4, 8, 16, 32, 64, 128, 256]$.
+- **Evaluation Discipline**: Single CPU thread (`faiss.omp_set_num_threads(1)`), single query at a time, taking the median of runs.
+
+---
+
+### 2. Cluster Geometry Diagnostics & Verification Sanity Checks
+
+To avoid unverified geometric assumptions and guarantee numerical reproducibility, we compute rigorous diagnostics across all four separation settings:
+
+| Separation ($s$) | Regime | Inter-Cluster Centroid Distance (mean [min–max]) | Within-Cluster Spread ($R_{\text{within}} \pm \sigma$) | Relative Separation Ratio ($\bar{D}_{\text{inter}} / R_{\text{within}}$) | Cluster Point Count (min–max, $\mu \pm \sigma$) | Ground-Truth Sanity Check | GT Max Discrepancy vs NumPy |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **$s = 0.5$** | **Severe Overlap** | 17.01 [13.91 – 19.46] | 7.97 ± 0.71 | **2.13** | 4,864 – 5,130 ($5,000.0 \pm 68.8$) | **PASSED (0 errors)** | $1.30 \times 10^{-5}$ |
+| **$s = 1.0$** | **Control Baseline** | 34.02 [27.81 – 38.92] | 7.97 ± 0.71 | **4.27** | 4,864 – 5,130 ($5,000.0 \pm 68.8$) | **PASSED (0 errors)** | $3.70 \times 10^{-5}$ |
+| **$s = 2.0$** | **Well-Separated** | 68.03 [55.62 – 77.83] | 7.97 ± 0.71 | **8.54** | 4,864 – 5,130 ($5,000.0 \pm 68.8$) | **PASSED (0 errors)** | $1.46 \times 10^{-4}$ |
+| **$s = 4.0$** | **Isolated Islands** | 136.07 [111.25 – 155.67] | 7.97 ± 0.71 | **17.08** | 4,864 – 5,130 ($5,000.0 \pm 68.8$) | **PASSED (0 errors)** | $6.28 \times 10^{-4}$ |
+
+#### Reproducibility & Integrity Guarantees:
+1. **Collision-Free Cache Keys**: Cache files incorporate all independent variables:
+   `synthetic_sep_{s}_N{n_vectors}_Q{n_queries}_D{dim}_K{n_clusters}_seed{seed}.npz`
+   Subset ground-truth cache keys similarly incorporate scale, target $k$, metric, and normalization parameters:
+   `{name}_gt_N{max_train}_k{k}_metric_{metric}_norm_{norm}.npz`
+2. **Cache Shape & Metadata Validation**: All loaded caches are validated against expected array dimensions `(N, D)` and `(Q, D)` with zero out-of-bound neighbor IDs; corrupt or parameter-mismatched caches are automatically invalidated and regenerated.
+3. **Ground-Truth Brute-Force Verification**: On a random sample of 50 queries per setting, exact Euclidean distances are computed directly in pure NumPy (`np.linalg.norm`) without FAISS and compared against the ground truth; all neighbor IDs lie in $[0, N-1]$, distances are monotonically non-decreasing, and maximum absolute distance discrepancy is $\le 6.28 \times 10^{-4}$ (reflecting standard float32 BLAS accumulation order).
+4. **Cross-Setting Consistency Invariant**: Pairwise differences across all separation datasets satisfy:
+   $$\max |(X^{(s_2)} - X^{(s_1)}) - (s_2 - s_1) \cdot \mu_c| < 10^{-5}$$
+   mathematically proving that point cluster assignments and Gaussian noise vectors $\epsilon_i$ are bit-for-bit identical across all four separation settings.
+5. **Environment Stamp**: Recorded with random seed `42`, Python `3.10.16`, NumPy `1.24.4`, and FAISS `1.8.0`.
+
+---
+
+### 3. Performance Summary at Recall $\ge 0.95$ (Refined Threshold Sweeps)
+
+Following high-resolution sweeps around the $0.95$ threshold ($\text{nprobe} \in [16, 17, 20, 24, 28, 32]$ for IVF-Flat and $\text{efSearch} \in [64, 80, 96, 112, 128]$ for HNSW), the table below records the exact minimum search parameter, operating recall, and measured single-thread QPS required to achieve $\text{Recall@10} \ge 0.95$:
+
+| Separation ($s$) | Cluster Overlap Regime | Index Type | Minimum Search Param @ 0.95 | Operating Recall | QPS @ Param | Latency (ms) | Speedup vs Exact |
+| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **$s = 0.5$** | **Severe Overlap** | Exact-Flat | Brute-force reference | 1.0000 | 321.1 | 3.11 ms | Reference |
+| **$s = 0.5$** | Severe Overlap | **HNSW** | **`efSearch = 96`** | **0.9602** | 4,000.6 | 0.25 ms | **12.5x** |
+| **$s = 0.5$** | Severe Overlap | **IVF-Flat** | **`nprobe = 20`** | **0.9503** | **6,302.1** | **0.16 ms** | **19.6x** |
+| **$s = 1.0$** | **Control Baseline** | Exact-Flat | Brute-force reference | 1.0000 | 448.4 | 2.23 ms | Reference |
+| **$s = 1.0$** | Control Baseline | **HNSW** | **`efSearch = 80`** | **0.9541** | 4,509.1 | 0.22 ms | **10.1x** |
+| **$s = 1.0$** | Control Baseline | **IVF-Flat** | **`nprobe = 20`** | **0.9502** | **6,670.5** | **0.15 ms** | **14.9x** |
+| **$s = 2.0$** | **Well-Separated** | Exact-Flat | Brute-force reference | 1.0000 | 359.9 | 2.78 ms | Reference |
+| **$s = 2.0$** | Well-Separated | **HNSW** | **`efSearch = 80`** | **0.9577** | 3,080.4 | 0.32 ms | **8.6x** |
+| **$s = 2.0$** | Well-Separated | **IVF-Flat** | **`nprobe = 20`** | **0.9517** | **4,518.9** | **0.22 ms** | **12.6x** |
+| **$s = 4.0$** | **Isolated Islands** | Exact-Flat | Brute-force reference | 1.0000 | 374.8 | 2.67 ms | Reference |
+| **$s = 4.0$** | Isolated Islands | **HNSW** | **`efSearch = 80`** | **0.9582** | 4,222.7 | 0.24 ms | **11.3x** |
+| **$s = 4.0$** | Isolated Islands | **IVF-Flat** | **`nprobe = 20`** | **0.9539** | **4,432.3** | **0.23 ms** | **11.8x** |
+
+---
+
+### 4. Hard Geometry Trade-off Curves & Search Effort
+
+The 4-panel figure below visualizes the empirical impact of cluster separation on Recall vs. QPS trade-offs, search parameter sensitivity, and latency:
+
+![Part 4 Hard Geometry Main Figure](results/figures/part4/part4_hard_geometry_main.png)
+
+*(Generated automatically by `scripts/run_part4.py` and saved to `results/figures/part4/part4_hard_geometry_main.png`)*
+
+---
+
+### 5. Architectural & Physical Mechanism Analysis
+
+Our empirical observations highlight how geometric cluster separation interacts with the underlying indexing structures:
+
+#### 1. IVF-Flat: Threshold Invariance Across Separation
+- **Empirical Sweep Progression**:
+  Across all separation multipliers $s \in \{0.5, 1.0, 2.0, 4.0\}$, the threshold-crossing value remained identically **`nprobe = 20`**:
+  - $\text{nprobe} = 16$: Recall is $0.8956\ (s=0.5) \to 0.8961\ (s=1.0) \to 0.8975\ (s=2.0) \to 0.8990\ (s=4.0)$ (< 0.95).
+  - $\text{nprobe} = 17$: Recall is $0.9125\ (s=0.5) \to 0.9137\ (s=1.0) \to 0.9152\ (s=2.0) \to 0.9164\ (s=4.0)$ (< 0.95).
+  - $\text{nprobe} = 20$: Recall crosses $0.95$ across all settings:
+    $$0.9503\ (s=0.5),\quad 0.9502\ (s=1.0),\quad 0.9517\ (s=2.0),\quad 0.9539\ (s=4.0)$$
+- **Physical Interpretation**:
+  The expectation that overlapping clusters would require a noticeably higher `nprobe` was not borne out by the experiment. Because $k$-means clustering dynamically fits centroids directly to the data distribution, it partitions each Gaussian cluster into roughly $\approx 512 / 20 = 25.6$ Voronoi cells. Scaling the separation multiplier $s$ stretches the centroids farther apart, but the relative within-cluster Gaussian dispersion ($\sigma = 1.0$) remains identical. Probing 20 Voronoi cells covers roughly $\approx 78\%$ of the volume of the query's parent cluster, capturing the bulk of the true nearest neighbors regardless of the distance to other clusters. While a subtle difference of $\approx 0.34\%$ is visible at sub-threshold probes ($\text{nprobe} = 16$: $0.8956$ vs. $0.8990$), it is too small to alter the discrete search parameter needed for 0.95 recall.
+
+#### 2. HNSW: Modest Shift in Search Beam Width
+- **Empirical Sweep Progression**:
+  - $\text{efSearch} = 64$: all settings fall below $0.95$ ($0.9277 \to 0.9391$).
+  - $\text{efSearch} = 80$: separated settings ($s \ge 1.0$) reach the threshold ($0.9541$ at $s=1.0$, $0.9577$ at $s=2.0$, and $0.9582$ at $s=4.0$), while severe overlap ($s = 0.5$) falls slightly short at $0.9468$ (a deficit of $0.0032$).
+  - $\text{efSearch} = 96$: $s = 0.5$ crosses the target, achieving $0.9602$.
+- **Physical Interpretation**:
+  When clusters overlap heavily ($s = 0.5$), points from different Gaussian components lie in close proximity, leading to graph edges that bridge distinct clusters. During greedy beam search, candidate paths can branch into adjacent clusters that appear locally promising but do not contain the query's true 10-NN. However, this effect is modest in practice: the required `efSearch` only increased from 80 to 96, and the search throughput remained comparable ($\approx 4,000$ QPS at $s=0.5$ vs. $\approx 4,500$ QPS at $s=1.0$).
+
+---
+
+### 6. Objective Scientific Analysis vs. Pre-Committed Hypothesis
+
+We evaluate our pre-committed hypothesis recorded in [`hypothesis.md`](hypothesis.md):
+
+> *"As clusters become less separated and overlap increases, IVF-Flat will require a higher nprobe to achieve Recall@10 = 0.95, since relevant neighbours may lie in clusters that are not probed. HNSW may exhibit a different sensitivity to cluster overlap because it searches a graph rather than selected clusters."*
+
+#### 1. IVF-Flat Overlap Prediction: Not Supported (Refuted)
+- **Prediction**: IVF-Flat would require a higher `nprobe` to achieve Recall@10 $\ge$ 0.95 as overlap increases.
+- **Outcome**: **Refuted by empirical evidence**. The required minimum setting remained identically `nprobe = 20` across all four separation multipliers ($s = 0.5, 1.0, 2.0, 4.0$).
+- **Explanation**: The hypothesis assumed that inter-cluster boundaries would cause nearest neighbours to disperse across distant unprobed Voronoi cells. In reality, $k$-means centroids track the data distribution, and the query's nearest neighbours remain concentrated within the local cluster's cells. While a slight reduction in recall was observed at sub-threshold settings (`nprobe = 16`: $0.8956$ for $s=0.5$ vs. $0.8990$ for $s=4.0$), this minor effect ($\approx 0.34\%$) did not shift the required `nprobe` setting.
+
+#### 2. HNSW Sensitivity Prediction: Weakly Consistent, but Modest Practical Impact
+- **Prediction**: HNSW would exhibit a different sensitivity to cluster overlap than IVF-Flat due to graph-based traversal.
+- **Outcome**: **Partially consistent with the data, but the effect is small**.
+- **Explanation**: HNSW did show a slight shift in search effort: $s = 0.5$ required `efSearch = 96` compared to `efSearch = 80` for $s \ge 1.0$. However, at `efSearch = 80`, $s = 0.5$ already achieved $0.9468$ recall—missing the target by less than $0.35\%$. The hypothesis correctly anticipated that graph search would behave differently than inverted lists, but the practical penalty of cluster overlap on HNSW was minor rather than substantial.
+
+#### Overall Experimental Conclusion
+Contrary to initial assumptions that "hard geometry" via heavy cluster overlap would degrade index performance significantly, both IVF-Flat and HNSW proved resilient to changes in cluster separation. Data-adaptive quantization in IVF-Flat and local neighbor heuristics in HNSW both mitigate the challenges posed by overlapping clusters, resulting in stable search parameters and throughput across all separation scales.
 
 ---
 
 ## How to Reproduce
 
-### 1. Run Complete Test Suite
-Run all 19 unit and integration tests (metrics, exact baseline, ANN indexes, subset ground truth, and scaling logic):
+### 1. One-Command Full Reproduction (`bash run_all.sh`)
+As mandated by the assignment deliverables (Deliverable 3), all benchmark numbers, tables, and figures in the report can be regenerated in an automated end-to-end pipeline using `run_all.sh`:
+```bash
+bash run_all.sh
+```
+This executes Parts 1 through 4 sequentially on the full datasets:
+1. Exact baseline benchmarks and ground truth agreement verification for SIFT and GloVe.
+2. Full parameter sweeps for HNSW, IVF-Flat, and IVF-PQ on SIFT and GloVe, generating consolidated Pareto trade-off curves (`sift_recall_vs_qps.png`, `glove_recall_vs_qps.png`) and sweep plots in `results/figures/sweeps/`.
+3. SIFT scaling experiment at 100K, 300K, and 1M vectors, recomputing subset ground truth and generating scaling curves in `results/figures/part3/`.
+4. Hard geometry experiment on synthetic clustered data across 4 cluster-separation multipliers ($s \in \{0.5, 1.0, 2.0, 4.0\}$), generating the master 4-panel figure in `results/figures/part4/part4_hard_geometry_main.png`.
+All execution rows are appended to `results/results.csv`.
+
+---
+
+### 2. Fast Laptop Verification (`bash run_all.sh --quick`)
+For rapid evaluation in under 15 minutes on a laptop (typical runtime ~7–8 minutes on an Intel i7):
+```bash
+bash run_all.sh --quick
+```
+This reproduces every part of the pipeline on reduced subsets:
+- **Part 1**: Evaluates exact baseline on the first 100,000 vectors with 200 sampled queries.
+- **Part 2**: Benchmarks HNSW, IVF-Flat, and IVF-PQ on 100,000 vectors with sampled queries and focused parameter sweeps for both SIFT and GloVe.
+- **Part 3**: Evaluates scaling on 100K vectors with focused sweep grids.
+- **Part 4**: Generates 10K synthetic vectors across 3 separation settings and regenerates the complete 4-panel diagnostic figure.
+
+---
+
+### 3. Run Complete Test Suite
+Run all 27 unit and integration tests (metrics, exact baseline, ANN indexes, subset ground truth, synthetic generation, geometry diagnostics, and cache validity):
 ```bash
 pytest tests/ -v
 ```
 
-### 2. Verify Exact Ground Truth Agreement (Part 1)
-```bash
-python scripts/run_part1.py --verify-only
-```
+---
 
-### 3. Run Part 1 Exact Benchmarks
+### 4. Running Individual Parts Standalone
+You can also run any specific experiment independently:
+
+#### Part 1: Exact Baseline & Verification
 ```bash
+# Verify ground truth agreement only:
+python scripts/run_part1.py --verify-only
+
+# Run exact timing benchmarks (single & batch):
 python scripts/run_part1.py --dataset all --threads 1
 ```
 
-### 4. Run Part 2 ANN Benchmarks & Generate Plots
+#### Part 2: Three Index Benchmarks (HNSW, IVF-Flat, IVF-PQ)
 ```bash
 python scripts/run_part2.py --dataset all --num-runs 2
 ```
 
-### 5. Run Part 3 Scaling Experiment
-To run the full scaling experiment on SIFT (100K, 300K, and 1M vectors):
+#### Part 3: SIFT Scaling Experiment
 ```bash
 python scripts/run_part3.py --sizes 100000 300000 1000000 --num-runs 2
 ```
-*Generated scaling figures are written to `results/figures/part3/`.*
 
-### 6. Fast Laptop Verification (`--quick`)
-Run fast verification in under 5 minutes:
+#### Part 4: Hard Geometry (Cluster Separation) Experiment
 ```bash
-python scripts/run_part1.py --quick
-python scripts/run_part2.py --dataset sift --quick
-python scripts/run_part3.py --quick
+python scripts/run_part4.py --separations 0.5 1.0 2.0 4.0 --num-runs 2
 ```

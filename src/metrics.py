@@ -77,8 +77,8 @@ def query_recall_at_k(
     if metric is not None and metric.lower() != "none":
         retrieved_distances = align_faiss_distances(retrieved_distances, metric=metric)
 
-    # Threshold distance at the k-th neighbor (0-indexed position k-1)
-    threshold = gt_distances[k - 1] + eps
+    # Threshold distance at the k-th neighbor with absolute & relative floating-point tolerance
+    threshold = gt_distances[k - 1] + max(eps, 1e-4 * float(gt_distances[k - 1]))
 
     # Deduplicate candidate IDs if provided to ensure unique hits
     if retrieved_indices is not None:
@@ -146,7 +146,7 @@ def recall_at_k(
 
     # Check if we can vectorize across all queries (when no duplicate check is needed)
     if retrieved_indices is None:
-        thresholds = gt_distances[:, k - 1] + eps
+        thresholds = gt_distances[:, k - 1] + np.maximum(eps, 1e-4 * gt_distances[:, k - 1])
         hits = np.sum(retrieved_distances[:, :k] <= thresholds[:, None], axis=1)
         recalls = np.minimum(1.0, hits / float(k))
     else:

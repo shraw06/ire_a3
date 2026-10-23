@@ -12,6 +12,7 @@ SWEEPS_DIR = FIGURES_DIR / "sweeps"
 
 RESULTS_CACHE_DIR = RESULTS_DIR / "cache"
 PART3_FIGURES_DIR = FIGURES_DIR / "part3"
+PART4_FIGURES_DIR = FIGURES_DIR / "part4"
 
 # Ensure output directories exist
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -19,6 +20,7 @@ RESULTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 SWEEPS_DIR.mkdir(parents=True, exist_ok=True)
 PART3_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+PART4_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Dataset paths
 SIFT_FILE = "sift-128-euclidean.hdf5"
@@ -106,3 +108,34 @@ QUICK_PART3_HNSW_M = [8, 16]
 QUICK_PART3_HNSW_EF_SEARCH = [8, 32, 128]
 QUICK_PART3_IVF_NLIST = [512, 1024]
 QUICK_PART3_IVF_NPROBE = [1, 8, 32, 128]
+
+# --------------------------------------------------------------------------
+# Part 4: Hard Geometry (Cluster Separation) Experiment
+# --------------------------------------------------------------------------
+PART4_DIM = 64
+PART4_N_CLUSTERS = 20
+PART4_N_VECTORS = 100_000
+PART4_N_QUERIES = 2_000
+PART4_TUNING_SPLIT_END = 1_000  # 1,000 tune, 1,000 eval
+PART4_SEPARATIONS = [0.5, 1.0, 2.0, 4.0]
+PART4_CONTROL_SEPARATION = 1.0
+PART4_SEED = 42
+
+# Fixed build parameters for Part 4
+PART4_HNSW_M = 16
+PART4_HNSW_EF_CONSTRUCTION = 64
+PART4_IVF_NLIST = 512
+
+# Search parameter sweeps for Part 4 (refined around threshold: efSearch=[80, 96, 112], nprobe=[17, 20, 24, 28])
+PART4_HNSW_EF_SEARCH_LIST = [4, 8, 16, 32, 64, 80, 96, 112, 128, 256, 512]
+PART4_IVF_NPROBE_LIST = [1, 2, 4, 8, 16, 17, 20, 24, 28, 32, 64, 128, 256]
+
+# Quick mode settings for Part 4
+QUICK_PART4_N_VECTORS = 10_000
+QUICK_PART4_N_QUERIES = 500
+QUICK_PART4_TUNING_SPLIT_END = 250
+QUICK_PART4_SEPARATIONS = [0.5, 1.0, 4.0]
+QUICK_PART4_IVF_NLIST = 128
+QUICK_PART4_HNSW_EF_SEARCH = [4, 16, 64, 256]
+QUICK_PART4_IVF_NPROBE = [1, 4, 16, 64]
+

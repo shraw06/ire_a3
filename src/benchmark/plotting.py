@@ -289,3 +289,192 @@ def plot_scaling_curves(
         plt.savefig(save_path)
         plt.close(fig)
         print(f"  [Figure] Saved scaling plot: {save_path}")
+
+
+def plot_part4_hard_geometry(
+    all_runs: List[Dict[str, Any]],
+    summary_records: List[Dict[str, Any]],
+    output_dir: Path,
+) -> None:
+    """
+    Generates the publication-quality 4-panel main figure and standalone figures
+    for Part 4 (Hard Geometry / Cluster Separation experiment).
+
+    Panels:
+    - (A) IVF-Flat Recall@10 vs. QPS trade-off across 4 separation settings
+    - (B) HNSW Recall@10 vs. QPS trade-off across 4 separation settings
+    - (C) Search effort (nprobe / efSearch) required to achieve Recall@10 >= 0.95
+    - (D) QPS achieved at Recall@10 >= 0.95 vs. Cluster Separation Multiplier
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sep_colors = {
+        0.5: "#d62728",  # Red (Heavy Overlap)
+        1.0: "#ff7f0e",  # Orange (Control)
+        2.0: "#2ca02c",  # Green (Separated)
+        4.0: "#1f77b4",  # Blue (Isolated)
+    }
+    sep_markers = {
+        0.5: "x",
+        1.0: "o",
+        2.0: "^",
+        4.0: "s",
+    }
+    sep_labels = {
+        0.5: "s = 0.5 (Heavy Overlap)",
+        1.0: "s = 1.0 (Control)",
+        2.0: "s = 2.0 (Separated)",
+        4.0: "s = 4.0 (Isolated)",
+    }
+
+    import pandas as pd
+    df_runs = pd.DataFrame(all_runs)
+    df_sum = pd.DataFrame(summary_records)
+
+    separations = sorted(df_sum["separation"].unique())
+
+    # Create 2x2 Master Figure
+    fig, axes = plt.subplots(2, 2, figsize=(14, 11), dpi=200)
+
+    # -------------------------------------------------------------
+    # Panel A: IVF-Flat Recall vs QPS Trade-off
+    # -------------------------------------------------------------
+    ax_ivf = axes[0, 0]
+    for s in separations:
+        sub = df_runs[(df_runs["index_type"] == "IVF-Flat") & (df_runs["separation"] == s)]
+        if sub.empty:
+            continue
+        p_pts = compute_pareto_frontier(sub.to_dict("records"))
+        recalls = [p["recall_at_10"] for p in p_pts]
+        qps_vals = [p["qps"] for p in p_pts]
+        c = sep_colors.get(s, "black")
+        m = sep_markers.get(s, "o")
+        lbl = sep_labels.get(s, f"s = {s}")
+        ax_ivf.plot(recalls, qps_vals, marker=m, color=c, linewidth=2.0, markersize=7, label=lbl)
+
+    ax_ivf.axvline(0.95, color="black", linestyle="--", alpha=0.6, label="Recall 0.95")
+    ax_ivf.set_yscale("log")
+    ax_ivf.set_xlabel("Recall@10", fontsize=11, fontweight="bold")
+    ax_ivf.set_ylabel("Queries Per Second (QPS, log scale)", fontsize=11, fontweight="bold")
+    ax_ivf.set_title("(A) IVF-Flat (nlist=512): Recall vs. QPS", fontsize=12, fontweight="bold")
+    ax_ivf.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.7)
+    ax_ivf.legend(fontsize=9, loc="lower left")
+
+    # -------------------------------------------------------------
+    # Panel B: HNSW Recall vs QPS Trade-off
+    # -------------------------------------------------------------
+    ax_hnsw = axes[0, 1]
+    for s in separations:
+        sub = df_runs[(df_runs["index_type"] == "HNSW") & (df_runs["separation"] == s)]
+        if sub.empty:
+            continue
+        p_pts = compute_pareto_frontier(sub.to_dict("records"))
+        recalls = [p["recall_at_10"] for p in p_pts]
+        qps_vals = [p["qps"] for p in p_pts]
+        c = sep_colors.get(s, "black")
+        m = sep_markers.get(s, "o")
+        lbl = sep_labels.get(s, f"s = {s}")
+        ax_hnsw.plot(recalls, qps_vals, marker=m, color=c, linewidth=2.0, markersize=7, label=lbl)
+
+    ax_hnsw.axvline(0.95, color="black", linestyle="--", alpha=0.6, label="Recall 0.95")
+    ax_hnsw.set_yscale("log")
+    ax_hnsw.set_xlabel("Recall@10", fontsize=11, fontweight="bold")
+    ax_hnsw.set_ylabel("Queries Per Second (QPS, log scale)", fontsize=11, fontweight="bold")
+    ax_hnsw.set_title("(B) HNSW (M=16, efConst=64): Recall vs. QPS", fontsize=12, fontweight="bold")
+    ax_hnsw.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.7)
+    ax_hnsw.legend(fontsize=9, loc="lower left")
+
+    # -------------------------------------------------------------
+    # Panel C: Search Effort Required to Reach Recall >= 0.95
+    # -------------------------------------------------------------
+    ax_effort = axes[1, 0]
+    ivf_sum = df_sum[df_sum["index_type"] == "IVF-Flat"].sort_values("separation")
+    hnsw_sum = df_sum[df_sum["index_type"] == "HNSW"].sort_values("separation")
+
+    if not ivf_sum.empty:
+        ax_effort.plot(
+            ivf_sum["separation"],
+            ivf_sum["param_at_95"],
+            marker="s",
+            color="#2ca02c",
+            linewidth=2.2,
+            markersize=8,
+            label="IVF-Flat: nprobe required",
+        )
+    if not hnsw_sum.empty:
+        ax_effort.plot(
+            hnsw_sum["separation"],
+            hnsw_sum["param_at_95"],
+            marker="o",
+            color="#1f77b4",
+            linewidth=2.2,
+            markersize=8,
+            label="HNSW: efSearch required",
+        )
+
+    ax_effort.set_xscale("log", base=2)
+    ax_effort.set_yscale("log", base=2)
+    ax_effort.set_xticks(separations)
+    ax_effort.set_xticklabels([str(s) for s in separations], fontsize=10, fontweight="bold")
+    ax_effort.set_xlabel("Cluster Separation Multiplier (log2 scale)", fontsize=11, fontweight="bold")
+    ax_effort.set_ylabel("Search Effort Value (log2 scale)", fontsize=11, fontweight="bold")
+    ax_effort.set_title("(C) Search Effort Required for Recall@10 ≥ 0.95", fontsize=12, fontweight="bold")
+    ax_effort.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.7)
+    ax_effort.legend(fontsize=10)
+
+    # -------------------------------------------------------------
+    # Panel D: QPS at Recall >= 0.95 vs Separation
+    # -------------------------------------------------------------
+    ax_qps = axes[1, 1]
+    exact_sum = df_sum[df_sum["index_type"] == "Exact-Flat"].sort_values("separation")
+    if not exact_sum.empty:
+        ax_qps.plot(
+            exact_sum["separation"],
+            exact_sum["qps_at_95"],
+            marker="*",
+            color="#9467bd",
+            linewidth=2.0,
+            markersize=10,
+            label="Exact-Flat (Baseline)",
+        )
+    if not hnsw_sum.empty:
+        hnsw_qps = hnsw_sum["qps_at_param"] if "qps_at_param" in hnsw_sum.columns else hnsw_sum["qps_at_95"]
+        ax_qps.plot(
+            hnsw_sum["separation"],
+            hnsw_qps,
+            marker="o",
+            color="#1f77b4",
+            linewidth=2.2,
+            markersize=8,
+            label="HNSW @ Min Param",
+        )
+    if not ivf_sum.empty:
+        ivf_qps = ivf_sum["qps_at_param"] if "qps_at_param" in ivf_sum.columns else ivf_sum["qps_at_95"]
+        ax_qps.plot(
+            ivf_sum["separation"],
+            ivf_qps,
+            marker="s",
+            color="#2ca02c",
+            linewidth=2.2,
+            markersize=8,
+            label="IVF-Flat @ Min Param",
+        )
+
+    ax_qps.set_xscale("log", base=2)
+    ax_qps.set_yscale("log")
+    ax_qps.set_xticks(separations)
+    ax_qps.set_xticklabels([str(s) for s in separations], fontsize=10, fontweight="bold")
+    ax_qps.set_xlabel("Cluster Separation Multiplier (log2 scale)", fontsize=11, fontweight="bold")
+    ax_qps.set_ylabel("Throughput (QPS @ Recall 0.95, log scale)", fontsize=11, fontweight="bold")
+    ax_qps.set_title("(D) Throughput at Recall@10 ≥ 0.95 vs. Separation", fontsize=12, fontweight="bold")
+    ax_qps.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.7)
+    ax_qps.legend(fontsize=10)
+
+    plt.suptitle("Part 4: Hard Geometry — Effect of Cluster Separation on ANN Search Effort", fontsize=14, fontweight="bold", y=0.995)
+    plt.tight_layout()
+    master_path = output_dir / "part4_hard_geometry_main.png"
+    plt.savefig(master_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  [Figure] Saved Part 4 Main 4-Panel Figure: {master_path}")
+

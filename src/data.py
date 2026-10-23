@@ -1,7 +1,7 @@
 """Data loading, normalization, and query split utilities for SIFT and GloVe."""
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import h5py
 import numpy as np
 import faiss
@@ -21,6 +21,7 @@ class DatasetSplits:
     gt_neighbors_eval: np.ndarray
     gt_distances_tune: np.ndarray
     gt_distances_eval: np.ndarray
+    diagnostics: Optional[Any] = None
 
     @property
     def test_full(self) -> np.ndarray:
@@ -62,6 +63,18 @@ def compute_ground_truth(
             neighbors: int32 array of shape (Q, k)
             distances: float32 array of shape (Q, k) in aligned metric
     """
+    if train.ndim != 2 or queries.ndim != 2:
+        raise ValueError(f"train and queries must be 2D arrays, got shapes {train.shape} and {queries.shape}")
+    if train.shape[1] != queries.shape[1]:
+        raise ValueError(
+            f"Dimension mismatch: train has {train.shape[1]} dimensions, queries has {queries.shape[1]} dimensions"
+        )
+    if k <= 0 or k > len(train):
+        raise ValueError(f"k must be in range [1, {len(train)}], got {k}")
+    metric_clean = metric.lower() if metric else "none"
+    if metric_clean not in ["euclidean", "angular", "none"]:
+        raise ValueError(f"Unsupported metric '{metric}'. Expected 'euclidean', 'angular', or 'none'.")
+
     train = np.ascontiguousarray(train, dtype=np.float32)
     queries = np.ascontiguousarray(queries, dtype=np.float32)
     dim = train.shape[1]
@@ -70,14 +83,88 @@ def compute_ground_truth(
     index.add(train)
     raw_dists, indices = index.search(queries, k)
 
-    if metric == "euclidean":
+    if metric_clean == "euclidean":
         dists = np.sqrt(np.maximum(raw_dists, 0.0))
-    elif metric == "angular":
+    elif metric_clean == "angular":
         dists = raw_dists / 2.0
     else:
         dists = raw_dists
 
     return indices.astype(np.int32), dists.astype(np.float32)
+
+
+def verify_ground_truth(
+    train: np.ndarray,
+    queries: np.ndarray,
+    neighbors: np.ndarray,
+    distances: np.ndarray,
+    metric: str = "euclidean",
+    sample_size: int = 50,
+    atol: float = 1e-4,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """
+    Sanity checks ground-truth arrays:
+    1. Checks for invalid neighbor IDs (< 0 or >= N or duplicate IDs per query).
+    2. Checks distance monotonicity along nearest neighbors.
+    3. Directly recomputes exact distances in pure NumPy for a sample of queries
+       and verifies agreement with stored ground-truth distances.
+
+    Returns:
+        Dictionary with verification results and maximum observed discrepancy.
+    """
+    n_train = len(train)
+    n_queries = len(queries)
+    k = neighbors.shape[1]
+
+    # 1. Check neighbor ID bounds
+    invalid_lower = int(np.sum(neighbors < 0))
+    invalid_upper = int(np.sum(neighbors >= n_train))
+    if invalid_lower > 0 or invalid_upper > 0:
+        raise ValueError(
+            f"Invalid neighbor IDs detected: {invalid_lower} IDs < 0, {invalid_upper} IDs >= N ({n_train})"
+        )
+
+    # 2. Check distance monotonicity
+    diffs = np.diff(distances, axis=1)
+    if np.any(diffs < -1e-5):
+        raise ValueError("Ground-truth distances are not monotonically non-decreasing along rank")
+
+    # 3. Direct NumPy distance verification on a query sample
+    rng = np.random.RandomState(seed)
+    sample_size = min(sample_size, n_queries)
+    sample_indices = rng.choice(n_queries, size=sample_size, replace=False)
+
+    max_diff = 0.0
+    for q_idx in sample_indices:
+        q_vec = queries[q_idx]
+        cand_ids = neighbors[q_idx]
+        cand_vecs = train[cand_ids]
+
+        if metric.lower() == "euclidean":
+            direct_dists = np.linalg.norm(cand_vecs - q_vec[np.newaxis, :], axis=1)
+        elif metric.lower() == "angular":
+            # Cosine distance = 1 - cos(theta)
+            dots = np.sum(cand_vecs * q_vec[np.newaxis, :], axis=1)
+            q_norm = np.linalg.norm(q_vec)
+            c_norms = np.linalg.norm(cand_vecs, axis=1)
+            direct_dists = 1.0 - (dots / (q_norm * c_norms + 1e-12))
+        else:
+            direct_dists = np.linalg.norm(cand_vecs - q_vec[np.newaxis, :], axis=1)
+
+        stored_dists = distances[q_idx]
+        diff = np.max(np.abs(direct_dists - stored_dists))
+        if diff > max_diff:
+            max_diff = float(diff)
+
+    passed = max_diff <= atol * 10.0  # Allow slight float32 accumulation difference
+    return {
+        "passed": passed,
+        "sample_size": sample_size,
+        "max_discrepancy": round(max_diff, 6),
+        "invalid_ids_count": 0,
+        "monotonicity_valid": True,
+    }
 
 
 def load_dataset(
@@ -110,9 +197,23 @@ def load_dataset(
     path = meta["path"]
 
     if not path.exists():
-        raise FileNotFoundError(
-            f"Dataset file not found at {path}. Please ensure it is present in the repository."
-        )
+        candidates = [
+            PROJECT_ROOT / meta["filename"],
+            PROJECT_ROOT.parent / meta["filename"],
+            Path.cwd() / meta["filename"],
+            PROJECT_ROOT / "data" / meta["filename"],
+            PROJECT_ROOT.parent / "data" / meta["filename"],
+        ]
+        found = False
+        for cand in candidates:
+            if cand.exists():
+                path = cand
+                found = True
+                break
+        if not found:
+            raise FileNotFoundError(
+                f"Dataset file '{meta['filename']}' not found at {path} or parent directories. Please ensure it is present."
+            )
 
     with h5py.File(path, "r") as f:
         train = np.array(f["train"][:max_train], dtype=np.float32)
@@ -135,16 +236,49 @@ def load_dataset(
     # For subset training vectors, ensure ground truth is computed specifically for this subset
     if neighbors is None or distances is None:
         RESULTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_path = RESULTS_CACHE_DIR / f"{name}_gt_{max_train}.npz"
-        if cache_path.exists() and not force_recompute_gt:
-            cached = np.load(cache_path)
-            neighbors = cached["neighbors"]
-            distances = cached["distances"]
-        else:
+        # Collision-free cache key including all relevant parameters
+        cache_path = RESULTS_CACHE_DIR / f"{name}_gt_N{max_train}_k100_metric_{meta['metric']}_norm_{normalize_glove}.npz"
+        legacy_cache_path = RESULTS_CACHE_DIR / f"{name}_gt_{max_train}.npz"
+
+        loaded_from_cache = False
+        target_path = cache_path if cache_path.exists() else legacy_cache_path
+
+        if target_path.exists() and not force_recompute_gt:
+            try:
+                cached = np.load(target_path, allow_pickle=True)
+                cached_neighbors = cached["neighbors"]
+                cached_distances = cached["distances"]
+                # Validate cached array shapes and integrity
+                if (
+                    cached_neighbors.shape == (len(test), 100)
+                    and cached_distances.shape == (len(test), 100)
+                    and np.all(cached_neighbors >= 0)
+                    and np.all(cached_neighbors < len(train))
+                ):
+                    neighbors = cached_neighbors
+                    distances = cached_distances
+                    loaded_from_cache = True
+            except Exception:
+                loaded_from_cache = False
+
+        if not loaded_from_cache:
             neighbors, distances = compute_ground_truth(
                 train, test, k=100, metric=meta["metric"]
             )
-            np.savez_compressed(cache_path, neighbors=neighbors, distances=distances)
+            # Verify newly computed ground truth
+            verify_ground_truth(train, test, neighbors, distances, metric=meta["metric"])
+            # Save cache with metadata
+            np.savez_compressed(
+                cache_path,
+                neighbors=neighbors,
+                distances=distances,
+                max_train=max_train,
+                k=100,
+                metric=meta["metric"],
+                normalize_glove=normalize_glove,
+                numpy_version=np.__version__,
+                faiss_version=faiss.__version__,
+            )
 
     test_tune = np.ascontiguousarray(test[:tuning_split_end], dtype=np.float32)
     test_eval = np.ascontiguousarray(test[tuning_split_end:], dtype=np.float32)
