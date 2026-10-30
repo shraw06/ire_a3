@@ -108,18 +108,18 @@ Exact search was executed on the evaluation split (queries 5,000–10,000) using
 ### 3. Timing Benchmark: Single-Query vs. Batch-Query
 Timings were measured on a single thread (`faiss.omp_set_num_threads(1)`), taking the median across runs.
 
-> **Timing methodology note**: Batch search times all 5,000 evaluation queries in one call. Single-query search is measured on a sample of **500 queries** and the per-query latency is extrapolated to the full 5,000 query set (i.e. `QPS = 5000 / (median_time_per_query × 5000)`). Because each brute-force query is i.i.d. this extrapolation is unbiased, but the reported single-query numbers carry higher variance than the batch numbers. Build times use multi-threaded construction (16 threads) to bound wall-clock time; search is always single-threaded.
+> **Timing methodology note**: Both batch search and single-query search are timed across the complete set of all 5,000 evaluation queries (queries 5,000–10,000) directly on a single thread without subsampling or extrapolation. Build times use multi-threaded construction (16 threads) to bound wall-clock time; search is always strictly single-threaded.
 
 | Dataset | Index Type | Threads | Query Mode | Recall@10 | Throughput (QPS) | Latency (ms/query) | Build Time (s) | Index Size |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **SIFT-128** | Exact-Flat | 1 | **Batch** | **1.0000** | **135.89** | **7.36 ms** | 0.18 s | 488.3 MB |
-| **SIFT-128** | Exact-Flat | 1 | **Single** | **1.0000** | **37.23** | **26.86 ms** | 0.18 s | 488.3 MB |
-| **GloVe-100** | Exact-Flat | 1 | **Batch** | **1.0000** | **155.79** | **6.42 ms** | 0.17 s | 451.5 MB |
-| **GloVe-100** | Exact-Flat | 1 | **Single** | **1.0000** | **42.36** | **23.61 ms** | 0.17 s | 451.5 MB |
+| **SIFT-128** | Exact-Flat | 1 | **Batch** | **1.0000** | **67.74** | **14.76 ms** | 0.41 s | 488.3 MB |
+| **SIFT-128** | Exact-Flat | 1 | **Single** | **1.0000** | **23.71** | **42.17 ms** | 0.41 s | 488.3 MB |
+| **GloVe-100** | Exact-Flat | 1 | **Batch** | **1.0000** | **72.54** | **13.79 ms** | 0.33 s | 451.5 MB |
+| **GloVe-100** | Exact-Flat | 1 | **Single** | **1.0000** | **26.67** | **37.49 ms** | 0.33 s | 451.5 MB |
 
 #### Speedup Observations:
-- **SIFT-128**: Batch search is **3.65x faster** than single-query search (135.89 QPS vs. 37.23 QPS).
-- **GloVe-100**: Batch search is **3.68x faster** than single-query search (155.79 QPS vs. 42.36 QPS).
+- **SIFT-128**: Batch search is **2.86x faster** than single-query search (67.74 QPS vs. 23.71 QPS).
+- **GloVe-100**: Batch search is **2.72x faster** than single-query search (72.54 QPS vs. 26.67 QPS).
 
 All results are logged in [`results/results.csv`](results/results.csv).
 
@@ -152,7 +152,7 @@ In Part 2, we evaluate three major Approximate Nearest Neighbour (ANN) index par
 
 ### 1. Benchmarking Methodology & Ground Rules
 - **Thread Count**: All **searches and timing benchmarks** run strictly on a **single CPU thread** (`faiss.omp_set_num_threads(1)`). **Index build** uses up to 16 threads to bound wall-clock construction time — build times in the tables therefore reflect multi-threaded construction, not single-threaded.
-- **Execution Mode**: Evaluated strictly **one query at a time** (single-query search) to measure true interactive retrieval throughput. QPS for each (build-setting, search-param) pair is measured on a sample of queries, then extrapolated; see Part 1 §3 for the sampling methodology.
+- **Execution Mode**: Evaluated strictly **one query at a time** (single-query search) across all 5,000 evaluation queries to measure true interactive retrieval throughput.
 - **Timing & Stability**: Median elapsed time over multiple independent runs is recorded after warm-up to eliminate cold-start cache anomalies.
 - **Evaluation Split**: Benchmarked strictly on the reserved evaluation set (queries `5,000` to `9,999`, total 5,000 queries).
 - **Metric**: Distance-threshold `recall@10` (no ground-truth ID restriction; candidates $\le d_{10} + \delta_{10}$ credited, with $\delta_{10} = \max(\epsilon,\ \epsilon \cdot d_{10})$, $\epsilon = 10^{-4}$).
@@ -252,7 +252,7 @@ The ground-truth nearest neighbours in `sift-128-euclidean.hdf5` are valid **onl
 
 ### 2. Scaling Benchmark Summary Table (Recall $\ge$ 0.95)
 
-*All **search** numbers measured strictly on a single thread (`faiss.omp_set_num_threads(1)`), single query at a time, taking the median over multiple runs on queries 5,000–10,000. **Build** uses multi-threaded construction (16 threads); build times reflect wall-clock construction time, not single-threaded cost. Single-query QPS for exact search is extrapolated from a 500-query sample (see Part 1 §3).*
+*All **search** numbers measured strictly on a single thread (`faiss.omp_set_num_threads(1)`), single query at a time, taking the median over multiple runs on queries 5,000–10,000 without extrapolation. **Build** uses multi-threaded construction (16 threads); build times reflect wall-clock construction time, not single-threaded cost.*
 
 | Scale ($N$) | Index Type | Best Config @ Recall $\ge$ 0.95 | Operating Recall | QPS @ Recall 0.95 | Single Latency | Build Time (s) | Index Size | Bytes / Vec | Speedup vs Exact |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
