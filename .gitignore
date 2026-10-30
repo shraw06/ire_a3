@@ -1,4 +1,3 @@
-Assignment 3 Benchmarking Approximate Nearest Neighbour Search.md
 glove-100-angular.hdf5
 sift-128-euclidean.hdf5
 .venv
@@ -11,3 +10,5 @@ results/cache/synthetic_*.npz
 *.out
 report.pdf
 report.tex
+ai_log
+Report.pdf
