@@ -4,7 +4,7 @@ sift-128-euclidean.hdf5
 __pycache__/
 *.py[cod]
 .pytest_cache/
-results/cache/synthetic_*.npz
+code/results/cache/
 *.aux
 *.log
 *.out
